@@ -41,4 +41,4 @@ trainer = Trainer(
 trainer.train()
 
 # Save model
-trainer.save_model("../outputs/qwen-csharp-specialized")
+trainer.save_model("../outputs/qwen-sharp")
