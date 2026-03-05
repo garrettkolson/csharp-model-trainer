@@ -1,0 +1,13 @@
+# C# Model Trainer Dependencies
+
+# Data collection
+datasets
+huggingface_hub
+PyGithub
+requests
+tqdm
+python-dotenv
+anthropic
+
+# Training and evaluation
+transformers
