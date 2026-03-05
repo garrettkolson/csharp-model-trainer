@@ -2,8 +2,8 @@
 
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 
-model = AutoModelForCausalLM.from_pretrained("../outputs/qwen-csharp-specialized", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen1.5-Coder-0.5B", trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained("../outputs/qwen-sharp", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-9B", trust_remote_code=True)
 
 generator = pipeline("text-generation", model=model, tokenizer=tokenizer, device=0)
 
