@@ -23,19 +23,21 @@ import re
 from pathlib import Path
 
 from datasets import load_dataset
+from huggingface_hub import hf_hub_download
 from tqdm import tqdm
+import os, time
 
 
 # ---------------------------------------------------------------------------
 # Quality filter heuristics
 # ---------------------------------------------------------------------------
 
-MIN_CHARS = 200          # discard tiny snippets
+MIN_CHARS = 100          # discard tiny snippets
 MAX_CHARS = 50_000       # discard huge auto-generated files
 MIN_LINES = 10
 MAX_LINE_LENGTH = 500    # flag minified / auto-generated code
 MAX_AVG_LINE_LENGTH = 150
-MIN_ALPHANUM_RATIO = 0.4 # discard files that are mostly symbols/whitespace
+MIN_ALPHANUM_RATIO = 0.3 # discard files that are mostly symbols/whitespace
 MAX_COMMENT_RATIO = 0.7  # discard files that are mostly comments/docs
 
 # Patterns that suggest auto-generated or low-quality files
@@ -57,21 +59,7 @@ DESIGNER_SUFFIXES = (
 )
 
 
-def is_quality_file(example: dict) -> bool:
-    content: str = example.get("content", "") or ""
-    path: str = example.get("path", "") or ""
-
-    # --- Path-based filters ---
-    path_lower = path.lower()
-    if any(path_lower.endswith(s) for s in DESIGNER_SUFFIXES):
-        return False
-    if "/obj/" in path_lower or "/bin/" in path_lower:
-        return False
-
-    # --- Size filters ---
-    if len(content) < MIN_CHARS or len(content) > MAX_CHARS:
-        return False
-
+def is_quality_file(content: str) -> bool:
     lines = content.splitlines()
     if len(lines) < MIN_LINES:
         return False
@@ -105,16 +93,46 @@ def is_quality_file(example: dict) -> bool:
     return True
 
 
-def extract_fields(example: dict) -> dict:
+def extract_fields(example: dict, content: str) -> dict:
     """Retain only the fields we need downstream."""
     return {
-        "content": example["content"],
+        "content": content,
         "path": example.get("path", ""),
         "repo_name": example.get("repo_name", ""),
-        "license": example.get("license", ""),
+        "license": example.get("detected_licenses", ""),
         "size": example.get("size", 0),
         "source": "the-stack-v2",
     }
+
+def is_csharp_small(row):
+    return (
+        row["language"] == "C-Sharp"
+        and row["length_bytes"] > MIN_CHARS
+        and row["length_bytes"] < MAX_CHARS
+        and not row["is_vendor"]
+        and not row["is_generated"]
+        and not row["path"].endswith(s) for s in DESIGNER_SUFFIXES
+    )
+
+def fetch_source(blob_id, repo_id="bigcode/the-stack-v2-data"):
+    token = os.getenv("HF_TOKEN")
+    
+    # Build the relative path inside the repo where the blob lives
+    prefix = blob_id[:2]
+    blob_path = f"blobs/{prefix}/{blob_id}"
+    # Download the blob to a temporary local file.
+    # If you have a HF token (needed for large files) you can pass
+    # `token=os.getenv('HF_TOKEN')` or `use_auth_token=True`.
+    local_file = hf_hub_download(repo_id=repo_id, 
+                                 filename=blob_path,
+                                 repo_type="dataset",
+                                 token=token)
+
+    # Read the file – most blobs are stored as raw bytes, so we decode.
+    with open(local_file, "rb") as f:
+        raw_bytes = f.read()
+    # Decode to text, replacing any invalid byte sequences.
+    return raw_bytes.decode(errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -136,11 +154,12 @@ def main():
     print("Loading The Stack v2 (C# subset, streaming)...")
     ds = load_dataset(
         "bigcode/the-stack-v2",
-        "C#",
+        "C-Sharp",
         split="train",
         streaming=True,
-        trust_remote_code=True,
     )
+
+    filtered_ds = ds.filter(is_csharp_small)
 
     shard_idx = 0
     kept = 0
@@ -158,15 +177,18 @@ def main():
         shard_records.clear()
 
     with tqdm(desc="Filtering", unit=" files") as pbar:
-        for example in ds:
+        for i, row in enumerate(filtered_ds):
+            time.sleep(0.05)
             seen += 1
             pbar.update(1)
             pbar.set_postfix(kept=kept, ratio=f"{kept/max(seen,1):.1%}")
 
-            if not is_quality_file(example):
+            if not row["blob_id"]: continue
+            content: str = fetch_source(row["blob_id"])
+            if not is_quality_file(content):
                 continue
 
-            shard_records.append(extract_fields(example))
+            shard_records.append(extract_fields(row))
             kept += 1
 
             if len(shard_records) >= args.shard_size:
