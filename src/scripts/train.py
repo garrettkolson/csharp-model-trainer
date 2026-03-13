@@ -3,7 +3,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, TextDataset, DataCollatorForLanguageModeling
 import os
 
-MODEL_NAME = "Qwen/Qwen3.5-9B"
+MODEL_NAME = "Qwen/Qwen3.5-27B"
 DATA_PATH = "../data/csharp_code.txt"
 
 # Load tokenizer and model

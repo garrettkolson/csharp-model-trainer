@@ -22,6 +22,8 @@ import json
 import re
 from pathlib import Path
 
+import boto3
+from smart_open import open
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download
 from tqdm import tqdm
@@ -101,38 +103,29 @@ def extract_fields(example: dict, content: str) -> dict:
         "repo_name": example.get("repo_name", ""),
         "license": example.get("detected_licenses", ""),
         "size": example.get("size", 0),
-        "source": "the-stack-v2",
+        "source": "the-stack-v2-dedup",
     }
 
 def is_csharp_small(row):
     return (
-        row["language"] == "C-Sharp"
-        and row["length_bytes"] > MIN_CHARS
+        row["length_bytes"] > MIN_CHARS
         and row["length_bytes"] < MAX_CHARS
         and not row["is_vendor"]
         and not row["is_generated"]
-        and not row["path"].endswith(s) for s in DESIGNER_SUFFIXES
     )
 
-def fetch_source(blob_id, repo_id="bigcode/the-stack-v2-data"):
-    token = os.getenv("HF_TOKEN")
-    
-    # Build the relative path inside the repo where the blob lives
-    prefix = blob_id[:2]
-    blob_path = f"blobs/{prefix}/{blob_id}"
-    # Download the blob to a temporary local file.
-    # If you have a HF token (needed for large files) you can pass
-    # `token=os.getenv('HF_TOKEN')` or `use_auth_token=True`.
-    local_file = hf_hub_download(repo_id=repo_id, 
-                                 filename=blob_path,
-                                 repo_type="dataset",
-                                 token=token)
+session = boto3.Session(
+    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"])
+s3 = session.client("s3")
 
-    # Read the file – most blobs are stored as raw bytes, so we decode.
-    with open(local_file, "rb") as f:
-        raw_bytes = f.read()
-    # Decode to text, replacing any invalid byte sequences.
-    return raw_bytes.decode(errors="replace")
+def download_contents(blob_id, src_encoding):
+    s3_url = f"s3://softwareheritage/content/{blob_id}"
+    
+    with open(s3_url, "rb", compression=".gz", transport_params={"client": s3}) as fin:
+        content = fin.read().decode(src_encoding)
+    
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +146,7 @@ def main():
 
     print("Loading The Stack v2 (C# subset, streaming)...")
     ds = load_dataset(
-        "bigcode/the-stack-v2",
+        "bigcode/the-stack-v2-dedup",
         "C-Sharp",
         split="train",
         streaming=True,
@@ -177,18 +170,18 @@ def main():
         shard_records.clear()
 
     with tqdm(desc="Filtering", unit=" files") as pbar:
-        for i, row in enumerate(filtered_ds):
-            time.sleep(0.05)
+        for row in filtered_ds:
             seen += 1
             pbar.update(1)
             pbar.set_postfix(kept=kept, ratio=f"{kept/max(seen,1):.1%}")
 
             if not row["blob_id"]: continue
-            content: str = fetch_source(row["blob_id"])
+            time.sleep(0.05)
+            content: str = download_contents(row["blob_id"], row["src_encoding"])
             if not is_quality_file(content):
                 continue
 
-            shard_records.append(extract_fields(row))
+            shard_records.append(extract_fields(row, content))
             kept += 1
 
             if len(shard_records) >= args.shard_size:

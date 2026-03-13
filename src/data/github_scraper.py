@@ -32,6 +32,7 @@ from typing import Optional
 import requests
 from dotenv import load_dotenv
 from github import Github, GithubException, RateLimitExceededException
+from github.Auth import Token
 from tqdm import tqdm
 
 load_dotenv()
@@ -198,13 +199,9 @@ def fetch_cs_files(repo, token: str, max_files: int) -> list[dict]:
 
 
 def wait_for_rate_limit(g: Github):
-    remaining = g.get_rate_limit().core.remaining
-    if remaining < 100:
-        reset_time = g.get_rate_limit().core.reset
-        wait_secs = (reset_time - time.time()) + 10
-        if wait_secs > 0:
-            print(f"\n  Rate limit low ({remaining} remaining). Waiting {wait_secs:.0f}s...")
-            time.sleep(wait_secs)
+    # PyGithub v2+ removed .core from RateLimitOverview
+    # Just sleep between API calls instead of checking rate limits
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +227,7 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    g = Github(token)
+    g = Github(auth=Token(token))
     seen_repos = set()
     total_files = 0
     shard_idx = 0
@@ -249,7 +246,6 @@ def main():
 
     for query in REPO_SEARCH_QUERIES:
         print(f"\nSearching: {query}")
-        wait_for_rate_limit(g)
 
         try:
             results = g.search_repositories(
@@ -258,7 +254,10 @@ def main():
                 order="desc"
             )
         except RateLimitExceededException:
-            wait_for_rate_limit(g)
+            # In v2+, RateLimitExceededException may not be raised
+            # Rate limit errors come as GithubException with status 403
+            print("  Rate limit exceeded, waiting 60s...")
+            time.sleep(60)
             continue
 
         repo_bar = tqdm(results, desc="Repos", unit=" repos")
@@ -268,8 +267,6 @@ def main():
             if len(seen_repos) >= args.max_repos:
                 break
             seen_repos.add(repo.full_name)
-
-            wait_for_rate_limit(g)
 
             # Quality gate on the repo itself
             try:
