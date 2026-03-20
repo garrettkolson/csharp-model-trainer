@@ -1,0 +1,27 @@
+# Environment variables
+.env
+
+# Output directories
+outputs/
+../outputs/
+
+# Data directories (can be uncommented if you don't want to track data)
+# data/
+# ../data/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
