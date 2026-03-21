@@ -239,7 +239,7 @@ def main():
                         default=["./data/stack_v2_csharp", "./data/github_csharp"])
     parser.add_argument("--output_dir", default="./data/synthetic_instruct")
     parser.add_argument("--model", default="claude-sonnet-4-6")
-    parser.add_argument("--max_pairs", type=int, default=50_000,
+    parser.add_argument("--max_pairs", type=int, default=5_000,
                         help="Target number of instruction pairs to generate")
     parser.add_argument("--max_chunks_per_file", type=int, default=3,
                         help="Max chunks to extract from a single file")

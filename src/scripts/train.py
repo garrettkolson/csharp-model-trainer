@@ -1,44 +1,104 @@
-# scripts/train.py
+# scripts/train.py - Qwen C# Instruction Fine-Tuning with DeepSpeed Zero-3 (3x 24GB GPUs)
 
-from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, TextDataset, DataCollatorForLanguageModeling
-import os
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from trl import SFTTrainer, SFTConfig
 
 MODEL_NAME = "Qwen/Qwen3.5-27B"
-DATA_PATH = "../data/csharp_code.txt"
 
 # Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token  # Add padding token
 
-# Load dataset
-dataset = TextDataset(
-    tokenizer=tokenizer,
-    file_path=DATA_PATH,
-    block_size=512,
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    trust_remote_code=True,
+    torch_dtype="auto",
+    device_map="auto",
 )
 
-# Data collator for language modeling
-data_collator = DataCollatorForLanguageModeling(
-    tokenizer=tokenizer,
-    mlm=False
+# Load ChatML dataset from JSONL
+dataset = load_dataset(
+    "json",
+    data_files="../data/synthetic_instruct/csharp_instruct_chatml.jsonl",
+    split="train"
 )
 
-# Load training args
-import json
-with open("../configs/training_args.json") as f:
-    train_args_dict = json.load(f)
-training_args = TrainingArguments(**train_args_dict)
 
-# Trainer setup
-trainer = Trainer(
+def format_chatml(examples):
+    """Format examples as ChatML strings for training."""
+    formatted = []
+    for messages in examples["messages"]:
+        chatml = ""
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                chatml += f"<|im_start|>user\n{content}<|im_end|>\n"
+            elif role == "assistant":
+                chatml += f"<|im_start|>assistant\n{content}<|im_end|>\n"
+        chatml += "<|im_start|>assistant\n"
+        formatted.append(chatml)
+    return {"text": formatted}
+
+
+# Format dataset as ChatML
+dataset = dataset.map(
+    format_chatml,
+    batched=True,
+    remove_columns=["messages"],
+)
+
+# DeepSpeed Zero-3 config for 3x 24GB GPUs
+deepspeed_config = {
+    "zero_optimization": {
+        "stage": 3,
+        "offload_optimizer": False,
+        "offload_param": False,
+        "overlap_comm": True,
+        "contiguous_gradients": True,
+        "stage3_prefetch_bucket_size": 5e8,
+        "stage3_param_persistence_threshold": 1e7,
+    },
+    "fp16": {
+        "enabled": True,
+        "auto_scale": True,
+    },
+    "train_batch_size": 12,  # 4 per GPU x 3 GPUs
+    "gradient_accumulation_steps": 4,
+    "gradient_clipping": 1.0,
+}
+
+# Training arguments (from training_args.json, adjusted for multi-GPU)
+training_args = SFTConfig(
+    output_dir="../outputs/qwen-csharp-specialized",
+    overwrite_output_dir=True,
+    num_train_epochs=3,
+    per_device_train_batch_size=4,  # 4 x 3 GPUs = 12 total batch size
+    gradient_accumulation_steps=4,
+    fp16=True,
+    save_steps=1000,
+    save_total_limit=2,
+    logging_steps=100,
+    warmup_steps=100,
+    weight_decay=0.01,
+    lr_scheduler_type="linear",
+    learning_rate=5e-5,
+    max_seq_length=2048,
+    dataset_text_field="text",  # We'll format as text field
+    deepspeed=deepspeed_config,
+)
+
+# Trainer setup for instruction tuning
+trainer = SFTTrainer(
     model=model,
     args=training_args,
-    data_collator=data_collator,
-    train_dataset=dataset
+    train_dataset=dataset,
+    tokenizer=tokenizer,
 )
 
 # Train
 trainer.train()
 
 # Save model
-trainer.save_model("../outputs/qwen-sharp")
+trainer.save_model("../outputs/qwen-csharp-specialized")
